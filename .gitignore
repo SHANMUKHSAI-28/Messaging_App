@@ -1,0 +1,61 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor and IDE files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.iml
+*.ipr
+*.iws
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+**/local.properties
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Dependency and build output
+node_modules/
+**/build/
+dist/
+coverage/
+.cache/
+.gradle/
+.dart_tool/
+.pub-cache/
+.pub/
+
+# JavaScript tooling
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated and local development files
+.flutter-plugins
+.flutter-plugins-dependencies
+**/ephemeral/
+*.pid
+
+# Signing keys and certificates
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
