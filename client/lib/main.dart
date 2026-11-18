@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_sms/flutter_sms.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:permission_handler/permission_handler.dart' as perm;
+import 'package:flutter_contacts/flutter_contacts.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,6 +58,8 @@ class MainHomeScreen extends StatefulWidget {
 class _MainHomeScreenState extends State<MainHomeScreen> {
   int _currentIndex = 0;
   List<EmergencyContact> _contacts = [];
+  List<Contact> _systemContacts = [];
+  bool _isLoadingSystemContacts = false;
   String _customMessage = "EMERGENCY! I need immediate help. My current location is:";
   List<String> _history = [];
   bool _isLoading = false;
@@ -70,9 +73,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
   Future<void> _requestPermissions() async {
     await [
-      Permission.location,
-      Permission.sms,
-      Permission.contacts,
+      perm.Permission.location,
+      perm.Permission.sms,
+      perm.Permission.contacts,
     ].request();
   }
 
@@ -108,6 +111,143 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         _history = historyData;
       });
     }
+  }
+
+  Future<void> _loadSystemContacts() async {
+    setState(() {
+      _isLoadingSystemContacts = true;
+    });
+
+    try {
+      PermissionStatus status = await FlutterContacts.permissions.request(PermissionType.readWrite);
+      if (status != PermissionStatus.granted) {
+        throw 'Contacts permission denied';
+      }
+
+      List<Contact> contacts = await FlutterContacts.getAll(
+        properties: {ContactProperty.name, ContactProperty.phone},
+      );
+      setState(() {
+        _systemContacts = contacts;
+        _isLoadingSystemContacts = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingSystemContacts = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load contacts: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  String _normalizePhone(String phone) {
+    return phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+  }
+
+  void _showImportContactsDialog() {
+    if (_systemContacts.isEmpty) {
+      _loadSystemContacts();
+      return;
+    }
+
+    // Create a map to track selection state
+    Set<int> selectedIndices = {};
+
+    // Pre-select contacts that are already in emergency contacts
+    for (int i = 0; i < _systemContacts.length; i++) {
+      Contact sysContact = _systemContacts[i];
+      String normalizedSysPhone = _normalizePhone(sysContact.phones.isNotEmpty ? sysContact.phones.first.number : '');
+      for (var emContact in _contacts) {
+        if (_normalizePhone(emContact.phone) == normalizedSysPhone) {
+          selectedIndices.add(i);
+          break;
+        }
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Import from System Contacts'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: _isLoadingSystemContacts
+                ? const Center(child: CircularProgressIndicator())
+                : Column(
+                    children: [
+                      const Text('Select contacts to add as emergency contacts:'),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _systemContacts.length,
+                          itemBuilder: (context, index) {
+                            Contact contact = _systemContacts[index];
+                            String phone = contact.phones.isNotEmpty ? contact.phones.first.number : 'No phone';
+                            String displayName = (contact.displayName ?? '').isNotEmpty ? contact.displayName! : 'Unknown';
+                            bool isSelected = selectedIndices.contains(index);
+
+                            return CheckboxListTile(
+                              title: Text(displayName),
+                              subtitle: Text(phone),
+                              value: isSelected,
+                              onChanged: (bool? value) {
+                                setDialogState(() {
+                                  if (value == true) {
+                                    selectedIndices.add(index);
+                                  } else {
+                                    selectedIndices.remove(index);
+                                  }
+                                });
+                              },
+                              secondary: CircleAvatar(
+                                backgroundColor: Colors.red[800],
+                                child: Text(displayName.isNotEmpty ? displayName[0].toUpperCase() : '?'),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red[800], foregroundColor: Colors.white),
+              onPressed: () {
+                for (int index in selectedIndices) {
+                  Contact sysContact = _systemContacts[index];
+                  if (sysContact.phones.isNotEmpty) {
+                    String phone = sysContact.phones.first.number;
+                    String name = (sysContact.displayName ?? '').isNotEmpty ? sysContact.displayName! : 'Unknown';
+                    
+                    // Check if already exists
+                    bool exists = _contacts.any((c) => _normalizePhone(c.phone) == _normalizePhone(phone));
+                    if (!exists) {
+                      _contacts.add(EmergencyContact(name: name, phone: phone));
+                    }
+                  }
+                }
+                _saveContacts();
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Added ${selectedIndices.length} contact(s) to emergency list')),
+                );
+              },
+              child: const Text('Import Selected'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _saveContacts() async {
@@ -346,11 +486,25 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                 'Emergency Contacts',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
-              ElevatedButton.icon(
-                onPressed: _showAddContactDialog,
-                icon: const Icon(Icons.add),
-                label: const Text('Add Contact'),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red[800], foregroundColor: Colors.white),
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _showImportContactsDialog,
+                    icon: const Icon(Icons.import_contacts),
+                    label: const Text('Import from Phone'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[800], 
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    onPressed: _showAddContactDialog,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Manually'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.red[800], foregroundColor: Colors.white),
+                  ),
+                ],
               ),
             ],
           ),
@@ -363,7 +517,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           Expanded(
             child: _contacts.isEmpty
                 ? const Center(
-                    child: Text('No emergency contacts added yet. Tap Add Contact above.'),
+                    child: Text('No emergency contacts added yet. Tap "Import from Phone" or "Add Manually" above.'),
                   )
                 : ListView.builder(
                     itemCount: _contacts.length,
@@ -504,7 +658,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             title: const Text('SMS Permission'),
             subtitle: const Text('Required to send emergency texts'),
             trailing: TextButton(
-              onPressed: () => openAppSettings(),
+              onPressed: () => perm.openAppSettings(),
               child: const Text('Open Settings'),
             ),
           ),
